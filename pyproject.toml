@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "setu-recon"
+version = "1.0.0"
+description = "Payment event ingestion and reconciliation service"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "sqlalchemy>=2.0.36",
+    # PyMySQL: pure-Python MySQL driver. Chosen over mysqlclient (needs a C
+    # compiler and libmysqlclient headers — a portability tax on every machine
+    # and CI image) and over mysql-connector-python (heavier, and its SQLAlchemy
+    # dialect is less well-trodden). Speaks plain MySQL wire protocol, so it also
+    # talks to TiDB unchanged.
+    "pymysql>=1.1.1",
+    "pydantic>=2.9.2",
+    "pydantic-settings>=2.6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.3",
+    "httpx>=0.27.2",
+    "ruff>=0.7.0",
+]
+
+[tool.setuptools]
+# Explicit: auto-discovery gives up when several top-level dirs (app, scripts,
+# tests, sql) sit next to each other. Only `app` is importable library code.
+packages = ["app", "app.routers"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["error::DeprecationWarning"]

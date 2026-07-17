@@ -1,0 +1,49 @@
+# DevPod Start superagi.devpod
+Host superagi.devpod
+  ForwardAgent yes
+  LogLevel error
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+  HostKeyAlgorithms rsa-sha2-256,rsa-sha2-512,ssh-rsa
+  ProxyCommand "/Applications/DevPod.app/Contents/MacOS/devpod-cli" ssh --stdio --context default --user vscode superagi --workdir "/superagi"
+  User vscode
+# DevPod End superagi.devpod
+Host prod
+  HostName 10.1.1.9
+  User jenkins
+  ProxyCommand aws ssm start-session --target i-0566bd388b88ae82f --document-name AWS-StartSSHSession --parameters portNumber=%p --profile default --region us-east-1
+
+Host staging_jump
+  HostName 35.172.85.199
+  User ubuntu
+  IdentityFile ~/.ssh/zata-keys.pem
+  ForwardAgent yes
+
+Host staging2
+  HostName 10.14.2.72
+  User jenkins
+  IdentityFile ~/.ssh/zata-keys.pem
+  ProxyCommand ssh -W %h:%p staging_jumip
+
+Host staging_jump_new
+  HostName 54.196.252.46
+  User ubuntu
+  Compression yes
+  DynamicForward 9052
+
+
+Host superagi_jump
+  HostName 44.217.253.123
+  User ubuntu
+  Compression yes
+  DynamicForward 9051
+  ServerAliveInterval 2
+  ServerAliveCountMax 5
+
+
+# Personal GitHub
+Host github-personal
+    HostName github.com
+    User git
+    IdentityFile ~/.ssh/id_ed25519_personal
+    IdentitiesOnly yes
