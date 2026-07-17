@@ -765,5 +765,3 @@ by hand. At tens of millions of rows I'd switch.
 defend). Recompute over incremental merge (simplicity over cleverness). Removing the
 two indexes that didn't earn their write cost. Treating `stuck_pending` as a
 reportable discrepancy rather than merely "not yet resolved".
-
-# SETU
