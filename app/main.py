@@ -18,8 +18,11 @@ logging.basicConfig(
 )
 log = logging.getLogger("setu")
 
-DESCRIPTION = """
+REPO_URL = "https://github.com/Gaurav-Jain-0781/SETU"
+DESCRIPTION = f"""
 Payment event ingestion and reconciliation for a Setu partner integration.
+
+**Source, design docs and tests:** {REPO_URL}
 
 **Ingestion is idempotent by `event_id`.** Replaying an event is a no-op that
 returns `200` with `status: "duplicate"` — never an error, so a retrying webhook

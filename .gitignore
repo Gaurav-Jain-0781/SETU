@@ -226,3 +226,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Screen recordings / demo assets — these belong on Drive or YouTube, not in git.
+# A 581MB .mov exceeds GitHub's 100MB hard limit and, once committed, stays in
+# history forever even if a later commit deletes it.
+*.mov
+*.mp4
+*.mkv
