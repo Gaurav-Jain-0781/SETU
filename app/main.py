@@ -3,7 +3,7 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import DBAPIError, IntegrityError
@@ -26,9 +26,10 @@ returns `200` with `status: "duplicate"` — never an error, so a retrying webho
 sender is never told it did something wrong.
 
 **Events are the source of truth.** `payment_events` is append-only; the
-`transactions` table is a projection merged from it with commutative operators
-(`LEAST`/`GREATEST`/`+`), which makes ingestion independent of both event order
-and delivery count.
+`transactions` table is a projection **recomputed** from it after every ingest,
+never incremented. That is what makes ingestion independent of both event order
+and delivery count — a recount off a deduplicated log gives the same answer no
+matter how many times an event arrives, or in what order.
 
 **Payment and settlement are independent axes.** That is what makes a
 contradiction like "failed but settled" representable — and therefore findable at
@@ -77,7 +78,7 @@ def create_app() -> FastAPI:
         first = exc.errors()[0]
         field = ".".join(str(p) for p in first["loc"][1:]) or None
         return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             content={
                 "error": {
                     "code": "validation_error",
@@ -111,7 +112,7 @@ def create_app() -> FastAPI:
     @app.exception_handler(IntegrityError)
     async def _integrity_error(_: Request, exc: IntegrityError) -> JSONResponse:
         # Reaching here means a constraint we rely on was violated in a way the
-        # ON CONFLICT paths don't cover — e.g. an event referencing a merchant
+        # INSERT IGNORE path doesn't absorb — e.g. an event referencing a merchant
         # that was never upserted. Surface it as a 409 rather than a 500: it is
         # the caller's data that conflicts, not our server that broke.
         log.warning("Integrity error: %s", exc.orig)

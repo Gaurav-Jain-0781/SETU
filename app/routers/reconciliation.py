@@ -82,17 +82,20 @@ def get_summary(
     unknown = [d for d in dimensions if d not in SUMMARY_DIMENSIONS]
     if unknown:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Unknown group_by dimension(s): {unknown}. Allowed: {sorted(SUMMARY_DIMENSIONS)}",
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"Unknown group_by dimension(s): {unknown}. "
+                f"Allowed: {sorted(SUMMARY_DIMENSIONS)}"
+            ),
         )
     if len(set(dimensions)) != len(dimensions):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Duplicate dimensions in group_by.",
         )
     if date_from and date_to and date_from >= date_to:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="date_from must be strictly before date_to.",
         )
 
@@ -172,7 +175,7 @@ def get_discrepancies(
     as_of, sla_hours, cutoff_ts = cutoff
     if date_from and date_to and date_from >= date_to:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="date_from must be strictly before date_to.",
         )
 

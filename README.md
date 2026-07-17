@@ -589,14 +589,53 @@ _TBD — see [Tradeoffs](#tradeoffs-and-what-id-do-differently)._
 
 ## Testing
 
+**46 tests, all passing.**
+
 ```bash
-docker compose run --rm api pytest -v
+docker compose up -d db          # tests need a real MySQL
+pytest -q
 ```
 
-Covers: idempotent replay, out-of-order arrival, the discrepancy truth table against
-known sample-data counts, pagination stability, and validation rejection.
+Tests run against **real MySQL** in a separate `setu_test` database (created and
+dropped by the suite, so your dev data is never touched). Never SQLite: half of
+what this service relies on — generated columns, `INSERT IGNORE` semantics, `CHECK`
+enforcement, window functions, `DECIMAL` behaviour — is MySQL-specific. A suite
+passing on SQLite would be testing a different program than the one we ship.
 
-CI runs the suite against a real MySQL on every push (`.github/workflows/ci.yml`).
+| file | covers |
+|---|---|
+| `test_idempotency.py` | replay, batch-internal duplicates, byte-identical state after full replay, projection rebuild |
+| `test_reconciliation.py` | all 5 discrepancy rules, SLA boundary, out-of-order arrival, value reconciliation |
+| `test_api.py` | validation, error envelope, pagination, filtering, schema-level guarantees |
+
+### The tests that matter most
+
+**`test_replayed_settlement_does_not_inflate_count`** — replays a `settled` event
+ten times and asserts the count stays at 1. This is the bug that turns the sample
+data's 95 real double-settlements into a phantom 162.
+
+**`test_distinct_settlement_events_are_counted`** — its mirror. Two settlements
+with *different* `event_id`s must still be caught. An implementation that
+deduplicated on `(transaction_id, event_type)` instead of `event_id` would pass the
+first test and fail this one, silently hiding real financial errors. Both halves
+are needed; either alone is misleading.
+
+**`test_events_converge_regardless_of_arrival_order`** — the same three events in
+four different orders, all producing an identical row.
+
+**Schema-level tests assert on the DATABASE, with the app bypassed** — proving the
+guarantees hold against someone running raw SQL, which is the whole point of
+enforcing them in the schema rather than in Python:
+
+- `test_check_constraint_rejects_unknown_event_type` — ✅ passes on MySQL 8.4, confirming `CHECK` is enforced. **This is also the canary for TiDB**, which may not enforce `CHECK`; if it fails there, this README's claim needs correcting and Pydantic becomes the only line of defence rather than the second.
+- `test_generated_status_cannot_be_written` — `UPDATE transactions SET status=...` is refused. Nobody can put a lie in that column.
+- `test_duplicate_event_id_is_refused_by_the_primary_key` — idempotency enforced by the database, not by code that could race.
+
+### No CI
+
+There is deliberately no GitHub Actions workflow — run `pytest` locally against a
+live MySQL. Wiring CI is the obvious next step and is noted in
+[Tradeoffs](#tradeoffs-and-what-id-do-differently).
 
 ---
 

@@ -92,7 +92,7 @@ def post_events(
 
     if len(events) > settings.max_batch_size:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=(
                 f"Batch size {len(events)} exceeds the limit of {settings.max_batch_size}. "
                 "Split the batch and retry — ingestion is idempotent, so overlapping "

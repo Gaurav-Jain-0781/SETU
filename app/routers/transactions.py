@@ -69,7 +69,10 @@ def get_transactions(
     merchant_id: Annotated[str | None, Query(description="Exact merchant id.")] = None,
     status_: Annotated[
         TransactionStatus | None,
-        Query(alias="status", description="Flattened status: settled > failed > processed > pending."),
+        Query(
+            alias="status",
+            description="Flattened status: settled > failed > processed > pending.",
+        ),
     ] = None,
     payment_status: Annotated[PaymentStatus | None, Query()] = None,
     settlement_status: Annotated[SettlementStatus | None, Query()] = None,
@@ -92,7 +95,7 @@ def get_transactions(
     settlement_status=settled` returns exactly the transactions where money moved
     for a failed payment.
 
-    Filtering, sorting, counting and pagination are all done by Postgres; this
+    Filtering, sorting, counting and pagination are all done by the database; this
     handler only shapes the page it is handed.
     """
     if sort_by not in SORTABLE_COLUMNS:
@@ -101,12 +104,12 @@ def get_transactions(
         # identifiers cannot be bound as parameters — building this clause from
         # raw input would be an injection vector.
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Invalid sort_by '{sort_by}'. Allowed: {sorted(SORTABLE_COLUMNS)}",
         )
     if date_from and date_to and date_from >= date_to:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="date_from must be strictly before date_to.",
         )
 
