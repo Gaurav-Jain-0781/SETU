@@ -21,6 +21,7 @@ _ADMIN_URL = os.getenv("TEST_ADMIN_URL", "mysql+pymysql://root:setu@localhost:33
 _TEST_DB = "setu_test"
 _TEST_URL = f"{_ADMIN_URL}/{_TEST_DB}"
 os.environ["DATABASE_URL"] = _TEST_URL
+os.environ.setdefault("DB_SSL", "false")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
