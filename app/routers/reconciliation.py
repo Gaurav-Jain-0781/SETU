@@ -18,6 +18,7 @@ from app.queries import (
     discrepancy_counts,
     list_discrepancies,
     reconciliation_summary,
+    split_discrepancies,
 )
 from app.schemas import (
     DiscrepancyCount,
@@ -253,7 +254,7 @@ def _to_group(row: Row, dimensions: list[str]) -> SummaryGroup:
 
 
 def _to_discrepancy(row: Row) -> DiscrepancyOut:
-    kinds = list(row.discrepancies)
+    kinds = split_discrepancies(row.discrepancies)
     return DiscrepancyOut(
         transaction_id=row.transaction_id,
         merchant=MerchantOut(merchant_id=row.merchant_id, merchant_name=row.merchant_name),

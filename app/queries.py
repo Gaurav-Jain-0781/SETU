@@ -85,6 +85,16 @@ _DISCREPANCY_LIST_SQL = "CONCAT_WS(',', {arms})".format(
 
 _ANY_DISCREPANCY_SQL = "(" + " OR ".join(DISCREPANCY_RULES.values()) + ")"
 
+
+def split_discrepancies(value: str | None) -> list[str]:
+    """Turn the CONCAT_WS output back into a list.
+
+    A clean row yields '' (CONCAT_WS of all-NULL arguments), which must become []
+    rather than ['']. Rule names are fixed identifiers we control, so there is no
+    escaping problem — no rule name contains a comma.
+    """
+    return value.split(",") if value else []
+
 # Human-readable explanation per rule. Presentation only — formatting a page of
 # <=100 already-selected rows is Python's job; selecting them was SQL's.
 DISCREPANCY_EXPLANATIONS: dict[str, str] = {
