@@ -22,6 +22,9 @@ def get_engine() -> Engine:
             settings.database_url,
             pool_size=settings.db_pool_size,
             max_overflow=settings.db_max_overflow,
+            # TLS when talking to a managed provider, plain for local Docker.
+            # See app/config.Settings.connect_args.
+            connect_args=settings.connect_args,
             # MySQL closes idle connections after `wait_timeout` (8h by default,
             # and managed hosts often set it far lower). Without pre_ping the pool
             # hands out a connection the server already hung up on, and the first
