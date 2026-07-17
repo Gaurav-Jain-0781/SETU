@@ -3,8 +3,46 @@
 A backend service that ingests payment lifecycle events, maintains transaction
 state, and reports reconciliation discrepancies.
 
-**Live demo:** _TBD — deployment pending_
-**Interactive API docs:** `/docs` on the deployed URL (auto-generated, click "Try it out")
+### 🔗 Live demo
+
+| | |
+|---|---|
+| **Interactive API docs** | **<https://setu-recon.onrender.com/docs>** ← start here: click any endpoint → "Try it out" → "Execute" |
+| Health + row counts | <https://setu-recon.onrender.com/health/ready> |
+| Discrepancies | <https://setu-recon.onrender.com/reconciliation/discrepancies> |
+| Discrepancy rules, as live SQL | <https://setu-recon.onrender.com/reconciliation/rules> |
+
+> ⏳ **First request takes ~30–50s.** Render's free tier sleeps after 15 minutes
+> idle; your request wakes it. It is not broken — retry once and it's fast.
+
+Loaded with all 10,355 sample events:
+
+```bash
+curl https://setu-recon.onrender.com/health/ready
+# {"status":"ready","counts":{"events":10165,"transactions":3800,"merchants":5}}
+```
+
+**10,165 events from a 10,355-event file** — the 190 duplicates in the source data
+were absorbed by idempotent ingestion. That gap is the whole design, visible from
+outside the service.
+
+Try replaying an event that is already ingested — it is a no-op, and returns `200`,
+not an error:
+
+```bash
+curl -X POST https://setu-recon.onrender.com/events \
+  -H 'content-type: application/json' -d '{
+    "event_id": "b768e3a7-9eb3-4603-b21c-a54cc95661bc",
+    "event_type": "payment_initiated",
+    "transaction_id": "2f86e94c-239c-4302-9874-75f28e3474ee",
+    "merchant_id": "merchant_2", "merchant_name": "FreshBasket",
+    "amount": 15248.29, "currency": "INR",
+    "timestamp": "2026-01-08T12:11:58.085567+00:00"}'
+# {"received":1,"ingested":0,"duplicates":1,
+#  "results":[{"event_id":"b768e3a7-...","status":"duplicate", ...}]}
+```
+
+Run it a hundred times; the event count stays at 10,165.
 
 ---
 

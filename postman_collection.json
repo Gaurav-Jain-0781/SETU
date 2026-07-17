@@ -1,0 +1,1054 @@
+{
+  "info": {
+    "name": "Setu Reconciliation Service",
+    "description": "Payment event ingestion and reconciliation.\n\n**Run it top to bottom** — the requests are ordered as a story, not an index. Folder 2 proves idempotency by replaying an event and showing the count doesn't move; folder 4 walks the discrepancy classes.\n\nMost requests carry test assertions, so `Run collection` is a real end-to-end check rather than a click-through.\n\n### Setup\n\nOne variable: `base_url`.\n\n- Live demo (default): `https://setu-recon.onrender.com`\n- Local: `http://localhost:8000`\n\n⏳ **The live demo sleeps after 15 min idle.** The first request may take 30–50s while Render wakes it. Not broken — retry once.\n\n### Where the numbers come from\n\nThe service is loaded with the provided `sample_events.json`: **10,355 events → 10,165 stored** (190 duplicates absorbed), 3,800 transactions, 5 merchants.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "https://setu-recon.onrender.com",
+      "description": "Live demo. Swap to http://localhost:8000 to run against docker compose."
+    },
+    {
+      "key": "known_event_id",
+      "value": "b768e3a7-9eb3-4603-b21c-a54cc95661bc",
+      "description": "An event already ingested from sample_events.json — used to demonstrate idempotency."
+    },
+    {
+      "key": "known_txn_id",
+      "value": "2f86e94c-239c-4302-9874-75f28e3474ee",
+      "description": "Its transaction: initiated then failed."
+    },
+    {
+      "key": "dup_settled_txn",
+      "value": "02d878de-f807-4bf1-9b16-7098be6e54fe",
+      "description": "A real double settlement — two 'settled' events, different event_ids, 4 minutes apart."
+    },
+    {
+      "key": "demo_txn_id",
+      "value": "",
+      "description": "Set at runtime by folder 3."
+    },
+    {
+      "key": "demo_event_id",
+      "value": "",
+      "description": "Set at runtime by folder 3."
+    },
+    {
+      "key": "events_before_replay",
+      "value": "",
+      "description": "Snapshotted at runtime."
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Health",
+      "item": [
+        {
+          "name": "Liveness",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": "Deliberately does NOT touch the database.\n\nA liveness probe that queried MySQL would report the app as dead during a transient DB blip and invite the orchestrator to restart a process that is fine. Liveness answers 'is this process wedged?'; readiness answers 'can it serve?'."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('is up', () => pm.expect(pm.response.json().status).to.eql('ok'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Readiness — the idempotency proof, visible from outside",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/health/ready",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health",
+                "ready"
+              ]
+            },
+            "description": "Checks the database AND reports row counts, so you can confirm the sample data is loaded rather than finding an empty database behind a healthy-looking service.\n\n**events: 10165 from a 10,355-event file.** The 190 missing are duplicates the primary key refused. That gap is the whole design."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const c = pm.response.json().counts;",
+                  "// 10,165 is the baseline loaded from sample_events.json. It GROWS if you POST new",
+                  "// events - that is the API working, not a failure. So assert the floor, not equality.",
+                  "pm.test('at least the 10,165 loaded from sample_events.json', () => pm.expect(c.events).to.be.at.least(10165));",
+                  "// The real claim: we stored FEWER than the 10,355 we were sent, because 190 were",
+                  "// duplicates the primary key refused. This stays true no matter how much demo traffic runs.",
+                  "pm.test('fewer stored than sent - 190 duplicates absorbed', () => pm.expect(c.events - 10165).to.be.below(190));",
+                  "pm.test('at least the 3,800 baseline transactions', () => pm.expect(c.transactions).to.be.at.least(3800));",
+                  "pm.test('5 merchants from the sample file', () => pm.expect(c.merchants).to.be.at.least(5));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Idempotency — the core requirement",
+      "description": "Replay an event that is already stored. It must be a no-op, and it must return 200.",
+      "item": [
+        {
+          "name": "Replay a known event → 200 'duplicate'",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{known_event_id}}\",\n  \"event_type\": \"payment_initiated\",\n  \"transaction_id\": \"{{known_txn_id}}\",\n  \"merchant_id\": \"merchant_2\",\n  \"merchant_name\": \"FreshBasket\",\n  \"amount\": 15248.29,\n  \"currency\": \"INR\",\n  \"timestamp\": \"2026-01-08T12:11:58.085567+00:00\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/events",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events"
+              ]
+            },
+            "description": "This event is already in the database (it is the first record in sample_events.json).\n\n**Why 200 and not 409?** The caller's intent — 'this event should be on record' — is satisfied either way. Webhook senders retry on timeouts and 5xx; a 409 would tell a correctly-behaving client it did something wrong, and could trigger alerts or dead-lettering for a *successful* retry. Idempotency exists so retries are safe; erroring on a safe retry defeats it.\n\nThe per-event `status` still lets the caller observe the dedup.\n\n**Send it as many times as you like.** The answer never changes."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Snapshot the event count so the next request can prove the replay moved it by zero,",
+                  "// rather than comparing against a hardcoded number that demo traffic invalidates.",
+                  "pm.sendRequest(pm.variables.replaceIn('{{base_url}}/health/ready'), (err, res) => {",
+                  "  if (!err) pm.collectionVariables.set('events_before_replay', res.json().counts.events);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200, NOT an error — a safe retry is not a failure', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('nothing was ingested', () => pm.expect(b.ingested).to.eql(0));",
+                  "pm.test('reported as a duplicate', () => pm.expect(b.duplicates).to.eql(1));",
+                  "pm.test('per-event status is observable', () => pm.expect(b.results[0].status).to.eql('duplicate'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Count is unchanged — the replay wrote nothing",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/health/ready",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health",
+                "ready"
+              ]
+            },
+            "description": "Still 10,165. The replay did not create a row, and did not touch the transaction's state."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const now = pm.response.json().counts.events;",
+                  "const before = Number(pm.collectionVariables.get('events_before_replay'));",
+                  "pm.test('replaying an event moved the count by EXACTLY zero', () => pm.expect(now).to.eql(before));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Ingest a fresh transaction",
+      "description": "Create a new transaction end to end, then replay it to prove idempotency on data created during this run rather than pre-loaded data.",
+      "item": [
+        {
+          "name": "POST a batch: initiated → processed",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "[\n  {\n    \"event_id\": \"{{$guid}}\",\n    \"event_type\": \"payment_initiated\",\n    \"transaction_id\": \"{{demo_txn_id}}\",\n    \"merchant_id\": \"merchant_1\",\n    \"merchant_name\": \"QuickMart\",\n    \"amount\": 2499.99,\n    \"currency\": \"INR\",\n    \"timestamp\": \"2026-01-10T10:00:00+00:00\"\n  },\n  {\n    \"event_id\": \"{{demo_event_id}}\",\n    \"event_type\": \"payment_processed\",\n    \"transaction_id\": \"{{demo_txn_id}}\",\n    \"merchant_id\": \"merchant_1\",\n    \"merchant_name\": \"QuickMart\",\n    \"amount\": 2499.99,\n    \"currency\": \"INR\",\n    \"timestamp\": \"2026-01-10T10:05:00+00:00\"\n  }\n]"
+            },
+            "url": {
+              "raw": "{{base_url}}/events",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events"
+              ]
+            },
+            "description": "`POST /events` takes a single object **or** an array — one endpoint for the partner's live feed and their replay/backfill path, which differ only in cardinality.\n\nThe whole batch lands in one database transaction: every event with its projection updated, or none."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Fresh ids each run, so the collection is re-runnable.",
+                  "pm.collectionVariables.set('demo_txn_id', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('demo_event_id', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('both events ingested', () => pm.expect(b.ingested).to.eql(2));",
+                  "pm.test('no duplicates', () => pm.expect(b.duplicates).to.eql(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Replay the SAME batch → all duplicates",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "[\n  {\n    \"event_id\": \"{{demo_event_id}}\",\n    \"event_type\": \"payment_processed\",\n    \"transaction_id\": \"{{demo_txn_id}}\",\n    \"merchant_id\": \"merchant_1\",\n    \"merchant_name\": \"QuickMart\",\n    \"amount\": 2499.99,\n    \"currency\": \"INR\",\n    \"timestamp\": \"2026-01-10T10:05:00+00:00\"\n  },\n  {\n    \"event_id\": \"{{demo_event_id}}\",\n    \"event_type\": \"payment_processed\",\n    \"transaction_id\": \"{{demo_txn_id}}\",\n    \"merchant_id\": \"merchant_1\",\n    \"merchant_name\": \"QuickMart\",\n    \"amount\": 2499.99,\n    \"currency\": \"INR\",\n    \"timestamp\": \"2026-01-10T10:05:00+00:00\"\n  }\n]"
+            },
+            "url": {
+              "raw": "{{base_url}}/events",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events"
+              ]
+            },
+            "description": "The same event twice, in one request — a duplicate **inside a single batch**, which is a different code path from two separate calls. The provided sample file contains 190 such pairs.\n\nBoth are duplicates here: one was already stored by the previous request, and the two in this body are identical to each other."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test('nothing ingested', () => pm.expect(b.ingested).to.eql(0));",
+                  "pm.test('both reported duplicate', () => pm.expect(b.duplicates).to.eql(2));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Fetch it — state + full event history",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/transactions/{{demo_txn_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "transactions",
+                "{{demo_txn_id}}"
+              ]
+            },
+            "description": "Two events, not three — the replay added nothing.\n\nNote `payment_status: processed` and `settlement_status: unsettled` as **independent axes**, and the complete event history: the audit trail that lets an operator answer *why* a transaction is in this state."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const t = pm.response.json();",
+                  "pm.test('exactly 2 events — the replay added nothing', () => pm.expect(t.event_count).to.eql(2));",
+                  "pm.test('history returned oldest-first', () => pm.expect(t.events.map(e => e.event_type)).to.eql(['payment_initiated','payment_processed']));",
+                  "pm.test('two independent status axes', () => {",
+                  "  pm.expect(t.payment_status).to.eql('processed');",
+                  "  pm.expect(t.settlement_status).to.eql('unsettled');",
+                  "});",
+                  "pm.test('merchant resolved via join', () => pm.expect(t.merchant.merchant_name).to.eql('QuickMart'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Reconciliation — discrepancies",
+      "description": "The five classes, and the two that are only findable because payment and settlement are separate axes.",
+      "item": [
+        {
+          "name": "All discrepancies + counts by type",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/reconciliation/discrepancies?limit=5",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "reconciliation",
+                "discrepancies"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "5"
+                }
+              ]
+            },
+            "description": "Expected against the sample data:\n\n| type | count |\n|---|---|\n| processed_never_settled | 380 |\n| stuck_pending | 190 |\n| settled_despite_failure | 95 |\n| duplicate_settlement | 95 |\n\n**duplicate_settlement is 95, not 162.** Naive ingestion would report 162 — the other 67 are the same settlement event delivered twice. Idempotency isn't hygiene here: get it wrong and the report is inflated 70%, and an ops team chases 67 problems that don't exist.\n\nA transaction can breach several rules, so `counts_by_type` may sum to more than `pagination.total`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "const by = {}; b.counts_by_type.forEach(c => by[c.type] = c.count);",
+                  "",
+                  "// 380 is the sample-data baseline. It grows by one every time folder 3 runs:",
+                  "// that demo transaction goes initiated -> processed and never settles, and it is",
+                  "// dated well past the 24h SLA. So the count going up is the RULE WORKING on data",
+                  "// this collection created - not a regression.",
+                  "pm.test('at least the 380 processed-but-never-settled from the sample data',",
+                  "        () => pm.expect(by.processed_never_settled).to.be.at.least(380));",
+                  "",
+                  "pm.test('190 stuck pending', () => pm.expect(by.stuck_pending).to.eql(190));",
+                  "pm.test('95 settled despite failing', () => pm.expect(by.settled_despite_failure).to.eql(95));",
+                  "",
+                  "// THE assertion. Exact, deliberately: naive ingestion reports 162 here, because 67",
+                  "// of those are the same settlement event delivered twice. at.least(95) would pass",
+                  "// on 162 and hide exactly the bug this proves we don't have.",
+                  "pm.test('EXACTLY 95 duplicate settlements - not the 162 a naive implementation reports',",
+                  "        () => pm.expect(by.duplicate_settlement).to.eql(95));",
+                  "",
+                  "pm.test('no settled_without_processing - upstream is honest',",
+                  "        () => pm.expect(by.settled_without_processing).to.be.undefined);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Money moved for a FAILED payment (95)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/reconciliation/discrepancies?type=settled_despite_failure&limit=3",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "reconciliation",
+                "discrepancies"
+              ],
+              "query": [
+                {
+                  "key": "type",
+                  "value": "settled_despite_failure"
+                },
+                {
+                  "key": "limit",
+                  "value": "3"
+                }
+              ]
+            },
+            "description": "The assignment's 'settlement recorded for a failed payment'.\n\nThis is **only representable** because payment_status and settlement_status are independent columns. With one combined `status` enum, `settled` would have overwritten `failed` — and these 95 transactions would be indistinguishable from the 2,470 healthy ones. You cannot query for what you have already erased."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test('95 found', () => pm.expect(b.pagination.total).to.eql(95));",
+                  "pm.test('each is failed AND settled at once', () => b.data.forEach(d => {",
+                  "  pm.expect(d.payment_status).to.eql('failed');",
+                  "  pm.expect(d.settlement_status).to.eql('settled');",
+                  "}));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Settled twice by DISTINCT events (95)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/reconciliation/discrepancies?type=duplicate_settlement&limit=3",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "reconciliation",
+                "discrepancies"
+              ],
+              "query": [
+                {
+                  "key": "type",
+                  "value": "duplicate_settlement"
+                },
+                {
+                  "key": "limit",
+                  "value": "3"
+                }
+              ]
+            },
+            "description": "Counts settlement **events**, not rows. A settlement replayed under the same event_id never reaches the counter — INSERT IGNORE drops it before the projection is recomputed.\n\nSo these 95 are real double settlements. The 67 that a naive implementation would also report are retries, and correctly absent."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test('95 real duplicates', () => pm.expect(b.pagination.total).to.eql(95));",
+                  "pm.test('each settled more than once', () => b.data.forEach(d => pm.expect(d.settled_event_count).to.be.above(1)));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The SLA is tunable — sla_hours=1",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/reconciliation/discrepancies?sla_hours=1&limit=1",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "reconciliation",
+                "discrepancies"
+              ],
+              "query": [
+                {
+                  "key": "sla_hours",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "1"
+                }
+              ]
+            },
+            "description": "Two rules are **time-relative**: a transaction becomes a discrepancy purely by getting older, with no event to trigger a write.\n\nThat is why discrepancies are computed at read time and not stored at ingest — a saved `is_broken` flag would be wrong the instant the clock crossed the SLA, unless a cron job re-swept the table forever.\n\n`?as_of=` also pins the evaluation to a fixed instant, so an ops report can be re-run later and produce the same numbers.\n\n**Where 24h came from:** measured, not guessed. Every settlement in the sample data lands within 6.00h of processing (p99 = 5.95h); every never-settled transaction is ≥17.3h old. 24h sits in that gap with 4× margin, and matches T+1 settlement convention in Indian payments."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('sla_hours honoured', () => pm.expect(pm.response.json().sla_hours).to.eql(1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The rules, as live SQL",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/reconciliation/rules",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "reconciliation",
+                "rules"
+              ]
+            },
+            "description": "The exact predicate behind each class — the same strings the queries are built from, not a prose paraphrase that could drift.\n\nReconciliation output is only trustworthy if an operator can audit what the service means by 'broken'."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('all five rules exposed', () => pm.expect(Object.keys(pm.response.json())).to.have.lengthOf(5));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5. Reconciliation — summary",
+      "item": [
+        {
+          "name": "By merchant — with value reconciliation",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/reconciliation/summary?group_by=merchant",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "reconciliation",
+                "summary"
+              ],
+              "query": [
+                {
+                  "key": "group_by",
+                  "value": "merchant"
+                }
+              ]
+            },
+            "description": "Counts alone aren't actionable. The money is:\n\n| field | meaning |\n|---|---|\n| `expected_settlement_amount` | money that **should** have settled |\n| `settled_amount` | money that **did** settle |\n| `unreconciled_amount` | the gap ops has to chase |\n\n**This endpoint and /discrepancies are independent SQL, and they agree exactly:**\n\n```\nunreconciled  =  processed_never_settled  −  settled_despite_failure\n₹7,537,522.50 =  ₹9,636,198.03            −  ₹2,098,675.53\n```\n\nOne GROUP BY with CASE aggregates computes all of it in a single pass. No Python arithmetic."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test('5 merchants', () => pm.expect(b.groups).to.have.lengthOf(5));",
+                  "pm.test('unreconciled = expected - settled, per group', () => b.groups.forEach(g => {",
+                  "  const gap = (+g.expected_settlement_amount) - (+g.settled_amount);",
+                  "  pm.expect(Math.abs(gap - (+g.unreconciled_amount))).to.be.below(0.01);",
+                  "}));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "By merchant AND date",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/reconciliation/summary?group_by=merchant,date&date_from=2026-01-08T00:00:00Z&date_to=2026-01-11T00:00:00Z",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "reconciliation",
+                "summary"
+              ],
+              "query": [
+                {
+                  "key": "group_by",
+                  "value": "merchant,date"
+                },
+                {
+                  "key": "date_from",
+                  "value": "2026-01-08T00:00:00Z"
+                },
+                {
+                  "key": "date_to",
+                  "value": "2026-01-11T00:00:00Z"
+                }
+              ]
+            },
+            "description": "Any combination of `merchant`, `date`, `status`, `payment_status`, `settlement_status`. One query serves every shape — the alternative is a hand-written query per combination, and three places for them to drift apart.\n\nDimensions resolve through a whitelist: GROUP BY takes an identifier, which cannot be a bound parameter, so user input is used to *look up* SQL we wrote rather than to *become* SQL.\n\n`date_to` is **exclusive** — avoids the classic BETWEEN bug of silently dropping everything timestamped after 00:00:00.000 on the final day."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('grouped by both dimensions', () => pm.expect(pm.response.json().group_by).to.eql(['merchant','date']));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Grand totals only",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/reconciliation/summary?group_by=",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "reconciliation",
+                "summary"
+              ],
+              "query": [
+                {
+                  "key": "group_by",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "₹7.5M unreconciled across 3,800 transactions."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('at least the 3,800 loaded from sample_events.json', () => pm.expect(pm.response.json().totals.transaction_count).to.be.at.least(3800));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6. Transactions — filtering, sorting, pagination",
+      "item": [
+        {
+          "name": "Filter: failed payments that settled anyway",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/transactions?payment_status=failed&settlement_status=settled&limit=3",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "transactions"
+              ],
+              "query": [
+                {
+                  "key": "payment_status",
+                  "value": "failed"
+                },
+                {
+                  "key": "settlement_status",
+                  "value": "settled"
+                },
+                {
+                  "key": "limit",
+                  "value": "3"
+                }
+              ]
+            },
+            "description": "The two axes combine to express what a single flattened status cannot. This is the same 95 transactions the discrepancy endpoint finds, reached from the other direction."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the same 95', () => pm.expect(pm.response.json().pagination.total).to.eql(95));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Filter by merchant + date range, sorted by amount",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/transactions?merchant_id=merchant_3&date_from=2026-02-01T00:00:00Z&date_to=2026-03-01T00:00:00Z&sort_by=amount&sort_dir=desc&limit=5",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "transactions"
+              ],
+              "query": [
+                {
+                  "key": "merchant_id",
+                  "value": "merchant_3"
+                },
+                {
+                  "key": "date_from",
+                  "value": "2026-02-01T00:00:00Z"
+                },
+                {
+                  "key": "date_to",
+                  "value": "2026-03-01T00:00:00Z"
+                },
+                {
+                  "key": "sort_by",
+                  "value": "amount"
+                },
+                {
+                  "key": "sort_dir",
+                  "value": "desc"
+                },
+                {
+                  "key": "limit",
+                  "value": "5"
+                }
+              ]
+            },
+            "description": "All filtering, sorting, counting and pagination happen in SQL. Python never receives a row it intends to discard.\n\n`total` comes from `COUNT(*) OVER ()` — a window function evaluated after WHERE but before LIMIT, so one round trip returns both the page and the full count. A second COUNT query would double the round trips and could disagree with the page under concurrent writes."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test('all from the requested merchant', () => b.data.forEach(t => pm.expect(t.merchant.merchant_id).to.eql('merchant_3')));",
+                  "pm.test('sorted by amount descending', () => {",
+                  "  const a = b.data.map(t => +t.amount);",
+                  "  pm.expect(a).to.eql([...a].sort((x,y) => y-x));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Pagination",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/transactions?limit=10&offset=0",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "transactions"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "10"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            },
+            "description": "Offset pagination with a total count, because ops tooling wants 'page 4 of 380'.\n\nORDER BY always carries `transaction_id` as a tie-breaker. Without it, tied sort values may be permuted differently per query, so a row can appear on two pages while another is silently skipped — and nobody notices until an ops person swears a transaction vanished.\n\nAt 3,800 rows offset is free. Past ~100k it should become keyset pagination — named in the README rather than silently over-built for scale that doesn't exist."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const p = pm.response.json().pagination;",
+                  "pm.test('total is the full count, not the page size', () => pm.expect(p.total).to.be.at.least(3800));",
+                  "pm.test('page size honoured', () => pm.expect(p.returned).to.eql(10));",
+                  "pm.test('has_more', () => pm.expect(p.has_more).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A real double settlement, with its audit trail",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/transactions/{{dup_settled_txn}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "transactions",
+                "{{dup_settled_txn}}"
+              ]
+            },
+            "description": "StyleHub, ₹41,263.87. **Two 'settled' events with different event_ids, four minutes apart** — a genuine double settlement, not a retry.\n\nThe event history is the evidence. This is why payment_events is append-only: it is what lets an operator answer *why*, instead of guessing."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const t = pm.response.json();",
+                  "pm.test('settled twice', () => pm.expect(t.settled_event_count).to.eql(2));",
+                  "pm.test('flagged as a duplicate settlement', () => pm.expect(t.discrepancies).to.include('duplicate_settlement'));",
+                  "const s = t.events.filter(e => e.event_type === 'settled');",
+                  "pm.test('the two settlements have DIFFERENT event_ids — real, not a replay', () => pm.expect(s[0].event_id).to.not.eql(s[1].event_id));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "7. Validation and error handling",
+      "description": "Every failure returns one envelope: {\"error\": {\"code\", \"message\", \"field\"}} — so a client writes one error handler, not one per endpoint.",
+      "item": [
+        {
+          "name": "Malformed event → 422",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"not-a-uuid\",\n  \"event_type\": \"banana\",\n  \"transaction_id\": \"also-not-a-uuid\",\n  \"merchant_id\": \"\",\n  \"merchant_name\": \"\",\n  \"amount\": -5,\n  \"currency\": \"RUPEES\",\n  \"timestamp\": \"yesterday\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/events",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events"
+              ]
+            },
+            "description": "Every field is wrong. Pydantic rejects it before a single line of SQL runs.\n\nThat guarantee is why the query layer can be plain SQL with bound parameters and no defensive re-checking: everything downstream is guaranteed a well-formed UUID, a known event type, an exact Decimal and a timezone-aware instant."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422', () => pm.response.to.have.status(422));",
+                  "const e = pm.response.json().error;",
+                  "pm.test('uniform error envelope', () => pm.expect(e).to.have.all.keys('code','message','field'));",
+                  "pm.test('names the offending field', () => pm.expect(e.field).to.be.ok);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unknown field → 422",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"payment_initiated\",\n  \"transaction_id\": \"{{$guid}}\",\n  \"merchant_id\": \"merchant_1\",\n  \"merchant_name\": \"QuickMart\",\n  \"ammount\": 100.00,\n  \"amount\": 100.00,\n  \"currency\": \"INR\",\n  \"timestamp\": \"2026-01-10T10:00:00+00:00\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/events",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events"
+              ]
+            },
+            "description": "Note the typo: `ammount`.\n\n`extra=\"forbid\"` — silently ignoring it would mean accepting an event whose amount we never read, and reconciling money we never received. A typo'd field name is a bug, not something to swallow."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('typo rejected, not swallowed', () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "SQL injection attempt in sort_by → 422",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/transactions?sort_by=amount; DROP TABLE transactions--",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "transactions"
+              ],
+              "query": [
+                {
+                  "key": "sort_by",
+                  "value": "amount; DROP TABLE transactions--"
+                }
+              ]
+            },
+            "description": "ORDER BY takes an **identifier**, and identifiers cannot be bound as parameters — so this is the one place where SQL structure depends on user input.\n\nIt resolves through a whitelist dict: the input is used to *look up* SQL we wrote, never to *become* SQL. An unknown key raises before touching the database.\n\nEverywhere else, values are bound parameters sent to MySQL on a separate channel from the query text, so a value can never be parsed as code."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('rejected before reaching SQL (422 from our whitelist, or 403 from Render edge WAF)', () => pm.expect(pm.response.code).to.be.oneOf([422, 403]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Table still exists (obviously)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/transactions?limit=1",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "transactions"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "1"
+                }
+              ]
+            },
+            "description": "All 3,800 still there."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('table intact — all 3,800+ still there', () => pm.expect(pm.response.json().pagination.total).to.be.at.least(3800));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unknown transaction → 404",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/transactions/00000000-0000-4000-8000-000000000000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "transactions",
+                "00000000-0000-4000-8000-000000000000"
+              ]
+            },
+            "description": "A valid UUID that doesn't exist. Same error envelope."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404', () => pm.response.to.have.status(404));",
+                  "pm.test('same envelope as every other error', () => pm.expect(pm.response.json().error.code).to.eql('not_found'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "limit over the cap → 422",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/transactions?limit=100000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "transactions"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "100000"
+                }
+              ]
+            },
+            "description": "Capped at 100, so a caller cannot turn a paginated endpoint into a full table scan."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422', () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
