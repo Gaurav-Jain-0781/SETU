@@ -3,8 +3,14 @@
 Ingests payment lifecycle events, maintains transaction state, and reports where
 payment state and settlement state disagree.
 
-**Live:** <https://setu-recon.onrender.com/docs> — interactive docs, click "Try it out".
-*First request takes ~30–50s (free tier sleeps). Not broken; retry once.*
+| | |
+|---|---|
+| **Live demo** | <https://setu-recon.onrender.com/docs> — interactive docs, click "Try it out" |
+| **Walkthrough video** | <https://www.youtube.com/watch?v=eGD_pA6jPBI> |
+| **Repo** | <https://github.com/Gaurav-Jain-0781/SETU> |
+| **Postman** | [`postman_collection.json`](postman_collection.json) — 26 requests, 55 assertions |
+
+*The live demo's first request takes ~30–50s (free tier sleeps). Not broken; retry once.*
 
 ```bash
 curl https://setu-recon.onrender.com/health/ready
