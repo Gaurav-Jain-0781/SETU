@@ -19,6 +19,11 @@ dependencies = [
     "pymysql>=1.1.1",
     "pydantic>=2.9.2",
     "pydantic-settings>=2.6.0",
+    # CA bundle for verifying the managed database's TLS certificate. Declared
+    # explicitly rather than relied on transitively via httpx/requests — a
+    # dependency you use but don't declare is one that disappears the day
+    # something else drops it.
+    "certifi>=2024.8.30",
 ]
 
 [project.optional-dependencies]

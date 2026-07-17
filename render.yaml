@@ -1,0 +1,55 @@
+# Render blueprint — infrastructure as code.
+#
+# Committing this rather than clicking through the dashboard means the deployment
+# is reviewable, reproducible, and recoverable. A service configured by hand exists
+# only in one person's browser history.
+#
+# The database is NOT defined here: Render's managed database is PostgreSQL-only,
+# and this service runs MySQL. MySQL lives on TiDB Cloud (free tier, MySQL
+# wire-protocol compatible) and is wired in via DATABASE_URL below.
+# See README § Deployment.
+
+services:
+  - type: web
+    name: setu-recon
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: singapore # closest to TiDB's ap-southeast-1 — every query crosses this hop
+
+    # Render's own probe. Deliberately /health and not /health/ready: liveness must
+    # not fail because the database blipped, or Render would recycle a process that
+    # is perfectly healthy. Readiness (which does check the DB) is at /health/ready
+    # for humans.
+    healthCheckPath: /health
+
+    envVars:
+      # sync: false = "prompt me, don't store it in git". The TiDB password is a
+      # live credential and must never be committed. Set it in the Render dashboard.
+      - key: DATABASE_URL
+        sync: false
+
+      # TiDB Cloud refuses non-TLS connections. Verified against certifi's CA
+      # bundle — see app/config.Settings.connect_args.
+      - key: DB_SSL
+        value: "true"
+
+      # Applies sql/schema.sql on boot. Idempotent (CREATE TABLE IF NOT EXISTS), so
+      # a redeploy is a no-op. Makes the service self-provisioning — no manual
+      # migrate step between "deploy" and "works".
+      - key: AUTO_MIGRATE
+        value: "true"
+
+      # Free instances have limited memory and TiDB caps connections. A large pool
+      # would waste both to serve a demo that sees single-digit concurrency.
+      - key: DB_POOL_SIZE
+        value: "2"
+      - key: DB_MAX_OVERFLOW
+        value: "3"
+
+    # Serve only. The sample data is loaded once, out of band, from a laptop
+    # (see README § Deployment) rather than on every boot: re-running the loader
+    # here would add ~10k round trips to a cold start that Render already times,
+    # to re-insert data that is already there. Ingestion is idempotent, so it would
+    # be *safe* — just pointless and slow.
+    dockerCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT

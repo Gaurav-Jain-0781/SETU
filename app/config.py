@@ -37,6 +37,29 @@ class Settings(BaseSettings):
     db_pool_size: int = 5
     db_max_overflow: int = 10
 
+    # TLS for the database connection.
+    #
+    # Off for local Docker (the DB is on a private network on the same host, and
+    # requiring certs there would be ceremony). ON for any managed provider —
+    # TiDB Cloud refuses non-TLS connections outright, and it should: without it
+    # the credentials and every row cross the public internet in the clear.
+    #
+    # We verify against certifi's CA bundle rather than shipping a provider CA
+    # file. Fewer moving parts, one less thing to expire, and it works for any
+    # managed MySQL rather than just the one we happened to pick.
+    db_ssl: bool = False
+
+    @property
+    def connect_args(self) -> dict:
+        if not self.db_ssl:
+            return {}
+        import certifi
+
+        # ssl.ca is what makes this real: it verifies the server's certificate
+        # against a trusted root. Encrypting without verifying would stop passive
+        # eavesdropping but not an active man-in-the-middle.
+        return {"ssl": {"ca": certifi.where()}}
+
     # Applies sql/schema.sql at startup. True is right for this service: the DDL
     # is idempotent (CREATE TABLE IF NOT EXISTS) and it means a fresh Render
     # deploy or a fresh container is self-provisioning with no manual step. A
