@@ -16,6 +16,7 @@ from app.queries import (
     get_transaction,
     get_transaction_events,
     list_transactions,
+    split_discrepancies,
 )
 from app.schemas import (
     EventOut,
@@ -163,7 +164,7 @@ def get_transaction_detail(
     base = _to_transaction(row)
     return TransactionDetailOut(
         **base.model_dump(),
-        discrepancies=list(row.discrepancies),
+        discrepancies=split_discrepancies(row.discrepancies),
         events=[
             EventOut(
                 event_id=e.event_id,

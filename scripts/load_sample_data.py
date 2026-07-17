@@ -59,11 +59,14 @@ def main() -> int:
     if args.truncate:
         print("Truncating existing data")
         with get_engine().begin() as conn:
-            # RESTART IDENTITY CASCADE: transactions and payment_events both FK to
-            # merchants, so they must go together or the FK blocks the wipe.
-            conn.execute(
-                text("TRUNCATE payment_events, transactions, merchants RESTART IDENTITY CASCADE")
-            )
+            # MySQL refuses TRUNCATE on a table another table's FK points at, and
+            # unlike Postgres it has no CASCADE for this. Dropping the FK checks for
+            # the duration is the standard answer; the session variable is scoped to
+            # this connection, so nothing else loses its guarantees.
+            conn.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
+            for table in ("payment_events", "transactions", "merchants"):
+                conn.execute(text(f"TRUNCATE TABLE {table}"))
+            conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
 
     raw = json.loads(args.file.read_text())
     print(f"Read {len(raw):,} events from {args.file.name}")
@@ -125,13 +128,14 @@ def main() -> int:
             f"  transactions:   {row.transactions:,}\n"
             f"  payment_events: {row.events:,}"
         )
-        # ANALYZE so the planner has real statistics. Without it Postgres uses
-        # defaults from an empty table and may pick a sequential scan over the
-        # partial indexes — the queries would be correct but the timings would
-        # misrepresent the design.
-        print("\nRunning ANALYZE for planner statistics")
+        # Refresh index statistics so the optimiser plans against reality rather
+        # than defaults left over from an empty table. Without this the queries are
+        # still correct, but the plans (and therefore any timing you measure) would
+        # misrepresent the index design.
+        print("\nRefreshing optimiser statistics")
     with engine.begin() as conn:
-        conn.execute(text("ANALYZE merchants, transactions, payment_events"))
+        for table in ("merchants", "transactions", "payment_events"):
+            conn.execute(text(f"ANALYZE TABLE {table}"))
 
     print("Done.")
     return 0
